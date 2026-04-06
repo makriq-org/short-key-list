@@ -29,6 +29,7 @@ DEFAULT_TEST_URL = "https://www.gstatic.com/generate_204"
 DEFAULT_OUTPUT = Path("artifacts/short-key-list.txt")
 DEFAULT_REPORT = Path("artifacts/check-report.json")
 DEFAULT_RATINGS = Path("state/key-ratings.json")
+DEFAULT_EXTRA_LIMITS = [100, 50]
 USER_AGENT = "short-key-list-checker/1.0"
 
 
@@ -122,6 +123,19 @@ def parse_vless(entry: str) -> dict[str, Any]:
 
 def split_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def parse_int_csv(value: str) -> list[int]:
+    limits: list[int] = []
+    for item in split_csv(value):
+        limits.append(int(item))
+    return limits
+
+
+def derive_output_path(output: Path, limit: int) -> Path:
+    if output.suffix:
+        return output.with_name(f"{output.stem}-{limit}{output.suffix}")
+    return output.with_name(f"{output.name}-{limit}")
 
 
 def build_stream_settings(config: dict[str, Any]) -> dict[str, Any]:
@@ -450,12 +464,23 @@ def run_checks(args: argparse.Namespace) -> int:
                 passed.append(result.entry)
             print(f"[{result.stage}] {'OK' if result.ok else 'FAIL'} {result.detail}")
 
-    selected = weighted_sample_without_replacement(passed, ratings, args.limit, randomizer)
+    requested_limits = sorted({args.limit, *args.extra_limits}, reverse=True)
+    max_limit = requested_limits[0] if requested_limits else args.limit
+    ranked_selection = weighted_sample_without_replacement(passed, ratings, max_limit, randomizer)
 
+    outputs: dict[int, Path] = {}
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    for limit in sorted(requested_limits, reverse=True):
+        output_path = args.output if limit == args.limit else derive_output_path(args.output, limit)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            "\n".join(ranked_selection[:limit]) + ("\n" if ranked_selection[:limit] else ""),
+            encoding="utf-8",
+        )
+        outputs[limit] = output_path
+
     args.report.parent.mkdir(parents=True, exist_ok=True)
     save_ratings(args.ratings, ratings)
-    args.output.write_text("\n".join(selected) + ("\n" if selected else ""), encoding="utf-8")
     args.report.write_text(
         json.dumps(
             {
@@ -467,6 +492,8 @@ def run_checks(args: argparse.Namespace) -> int:
                     "selected": len(selected),
                 },
                 "selected_limit": args.limit,
+                "selected_limits": requested_limits,
+                "outputs": {str(limit): str(path) for limit, path in outputs.items()},
                 "test_url": args.test_url,
                 "ratings_file": str(args.ratings),
                 "top_rated": [
@@ -488,9 +515,10 @@ def run_checks(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
 
+    output_summary = ", ".join(f"{limit}:{path}" for limit, path in sorted(outputs.items(), reverse=True))
     print(
-        f"candidates={len(entries)} passed={len(passed)} selected={len(selected)} "
-        f"output={args.output} report={args.report}"
+        f"candidates={len(entries)} passed={len(passed)} selected={len(ranked_selection[:args.limit])} "
+        f"outputs={output_summary} report={args.report}"
     )
     return 0 if passed else 1
 
@@ -505,6 +533,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit",
         type=int,
         default=int(env_first("KEY_LIST_LIMIT", "WHITELIST_LIMIT", default="200")),
+    )
+    parser.add_argument(
+        "--extra-limit",
+        dest="extra_limits",
+        action="append",
+        type=int,
+        default=parse_int_csv(env_first("EXTRA_KEY_LIST_LIMITS", default=",".join(str(item) for item in DEFAULT_EXTRA_LIMITS))),
+        help="Additional list sizes to generate from the same checked pool.",
     )
     parser.add_argument("--workers", type=int, default=int(env_first("WORKERS", default="4")))
     parser.add_argument("--port-base", type=int, default=int(env_first("PORT_BASE", default="21080")))

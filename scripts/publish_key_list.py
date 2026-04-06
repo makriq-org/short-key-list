@@ -30,11 +30,24 @@ def configure_identity(repo: Path) -> None:
             raise SystemExit(proc.stderr.strip() or proc.stdout.strip() or f"git config {key} failed")
 
 
+def parse_extra_file(value: str) -> tuple[Path, str]:
+    source, separator, target = value.partition(":")
+    if not separator or not source.strip() or not target.strip():
+        raise argparse.ArgumentTypeError("extra file must use source_path:target_path format")
+    return Path(source.strip()), target.strip()
+
+
+def copy_target(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Copy checked key list into a git repo and optionally push it.")
     parser.add_argument("--source", type=Path, default=Path("artifacts/short-key-list.txt"))
     parser.add_argument("--target-repo", type=Path, required=True)
     parser.add_argument("--target-file", default="data/short-key-list.txt")
+    parser.add_argument("--extra-file", dest="extra_files", action="append", type=parse_extra_file, default=[])
     parser.add_argument("--commit-message", default="Update short key list")
     parser.add_argument("--branch", help="Branch to publish to. Defaults to the target repo current branch.")
     parser.add_argument("--push", action="store_true")
@@ -59,10 +72,12 @@ def main() -> int:
         configure_identity(publish_repo)
 
         target_path = publish_repo / args.target_file
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(args.source, target_path)
+        copy_target(args.source, target_path)
+        for extra_source, extra_target in args.extra_files:
+            copy_target(extra_source, publish_repo / extra_target)
 
-        add = git(publish_repo, "add", args.target_file)
+        add_args = ["add", args.target_file, *[extra_target for _, extra_target in args.extra_files]]
+        add = git(publish_repo, *add_args)
         if add.returncode != 0:
             raise SystemExit(add.stderr.strip() or "git add failed")
 
