@@ -52,6 +52,10 @@ class KeyRating:
     failure_streak: int
     last_ok: bool
     last_checked_at: int
+    last_elapsed_ms: int
+    avg_success_latency_ms: float
+    latency_ema_ms: float
+    recent_score: float
     rating: float
 
 
@@ -346,6 +350,10 @@ def load_ratings(path: Path) -> dict[str, KeyRating]:
             failure_streak=int(item.get("failure_streak", 0)),
             last_ok=bool(item.get("last_ok", False)),
             last_checked_at=int(item.get("last_checked_at", 0)),
+            last_elapsed_ms=int(item.get("last_elapsed_ms", 0)),
+            avg_success_latency_ms=float(item.get("avg_success_latency_ms", 0.0)),
+            latency_ema_ms=float(item.get("latency_ema_ms", 0.0)),
+            recent_score=float(item.get("recent_score", 0.5)),
             rating=float(item.get("rating", 0.5)),
         )
     return ratings
@@ -360,14 +368,41 @@ def save_ratings(path: Path, ratings: dict[str, KeyRating]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(value, maximum))
+
+
+def speed_score(latency_ms: float) -> float:
+    if latency_ms <= 0:
+        return 0.35
+    fast_ms = 800.0
+    slow_ms = 6000.0
+    normalized = clamp((latency_ms - fast_ms) / (slow_ms - fast_ms), 0.0, 1.0)
+    return 1.0 - normalized
+
+
 def calculate_rating(record: KeyRating) -> float:
     checks = max(0, record.checks)
     successes = max(0, record.successes)
     base = (successes + 1.0) / (checks + 2.0)
-    streak_bonus = min(record.success_streak, 5) * 0.05
-    failure_penalty = min(record.failure_streak, 5) * 0.08
-    experience_bonus = min(checks, 20) * 0.01
-    rating = base + streak_bonus + experience_bonus - failure_penalty
+    recent_score = clamp(record.recent_score, 0.0, 1.0)
+    latency_reference = record.latency_ema_ms or record.avg_success_latency_ms
+    latency_component = speed_score(latency_reference)
+
+    streak_bonus = min(record.success_streak, 5) * 0.045
+    failure_penalty = min(record.failure_streak, 5) * 0.09
+    experience_bonus = min(checks, 20) * 0.008
+    slow_penalty = clamp((latency_reference - 2500.0) / 3000.0, 0.0, 1.0) * 0.2 if latency_reference > 0 else 0.0
+
+    rating = (
+        0.55 * base
+        + 0.3 * recent_score
+        + 0.25 * latency_component
+        + streak_bonus
+        + experience_bonus
+        - failure_penalty
+        - slow_penalty
+    )
     return round(max(0.05, min(rating, 2.0)), 4)
 
 
@@ -382,17 +417,35 @@ def update_rating(record: KeyRating | None, result: CheckResult, checked_at: int
             failure_streak=0,
             last_ok=False,
             last_checked_at=0,
+            last_elapsed_ms=0,
+            avg_success_latency_ms=0.0,
+            latency_ema_ms=0.0,
+            recent_score=0.5,
             rating=0.5,
         )
 
+    previous_successes = record.successes
     record.checks += 1
     record.last_ok = result.ok
     record.last_checked_at = checked_at
+    record.last_elapsed_ms = result.elapsed_ms
+    record.recent_score = record.recent_score * 0.65 + (1.0 if result.ok else 0.0) * 0.35
 
     if result.ok:
         record.successes += 1
         record.success_streak += 1
         record.failure_streak = 0
+        if previous_successes <= 0 or record.avg_success_latency_ms <= 0:
+            record.avg_success_latency_ms = float(result.elapsed_ms)
+        else:
+            record.avg_success_latency_ms = (
+                (record.avg_success_latency_ms * previous_successes) + result.elapsed_ms
+            ) / record.successes
+
+        if record.latency_ema_ms <= 0:
+            record.latency_ema_ms = float(result.elapsed_ms)
+        else:
+            record.latency_ema_ms = record.latency_ema_ms * 0.7 + result.elapsed_ms * 0.3
     else:
         record.failures += 1
         record.failure_streak += 1
@@ -489,7 +542,7 @@ def run_checks(args: argparse.Namespace) -> int:
                 "counts": {
                     "candidates": len(entries),
                     "passed": len(passed),
-                    "selected": len(selected),
+                    "selected": len(ranked_selection[:args.limit]),
                 },
                 "selected_limit": args.limit,
                 "selected_limits": requested_limits,
@@ -503,6 +556,9 @@ def run_checks(args: argparse.Namespace) -> int:
                         "checks": item.checks,
                         "successes": item.successes,
                         "failures": item.failures,
+                        "recent_score": item.recent_score,
+                        "avg_success_latency_ms": round(item.avg_success_latency_ms, 1),
+                        "latency_ema_ms": round(item.latency_ema_ms, 1),
                     }
                     for item in sorted(ratings.values(), key=lambda value: value.rating, reverse=True)[:20]
                 ],
