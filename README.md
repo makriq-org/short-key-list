@@ -57,3 +57,4 @@ python3 scripts/run_pipeline.py
 - `EXTRA_KEY_LIST_LIMITS` — дополнительные размеры списков через запятую.
 - `WORKERS` — параллелизм проверок.
 - `TCP_PRECHECK` — быстрый TCP-предчек перед запуском `xray`.
+- `RATING_*` — веса и штрафы рейтинга: база, свежесть, latency, бонусы за streak и штраф за медленные ключи.

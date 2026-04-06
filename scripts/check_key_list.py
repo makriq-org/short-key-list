@@ -31,6 +31,13 @@ DEFAULT_REPORT = Path("artifacts/check-report.json")
 DEFAULT_RATINGS = Path("state/key-ratings.json")
 DEFAULT_EXTRA_LIMITS = [100, 50]
 USER_AGENT = "short-key-list-checker/1.0"
+DEFAULT_RATING_BASE_WEIGHT = 0.55
+DEFAULT_RATING_RECENT_WEIGHT = 0.30
+DEFAULT_RATING_LATENCY_WEIGHT = 0.25
+DEFAULT_RATING_STREAK_BONUS_STEP = 0.045
+DEFAULT_RATING_FAILURE_PENALTY_STEP = 0.09
+DEFAULT_RATING_EXPERIENCE_BONUS_STEP = 0.008
+DEFAULT_RATING_SLOW_PENALTY_MAX = 0.2
 
 
 @dataclass
@@ -379,6 +386,16 @@ def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(value, maximum))
 
 
+def env_float(name: str, default: float) -> float:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise SystemExit(f"invalid float for {name}: {value}") from exc
+
+
 def speed_score(latency_ms: float) -> float:
     if latency_ms <= 0:
         return 0.35
@@ -396,15 +413,25 @@ def calculate_rating(record: KeyRating) -> float:
     latency_reference = record.latency_ema_ms or record.avg_success_latency_ms
     latency_component = speed_score(latency_reference)
 
-    streak_bonus = min(record.success_streak, 5) * 0.045
-    failure_penalty = min(record.failure_streak, 5) * 0.09
-    experience_bonus = min(checks, 20) * 0.008
-    slow_penalty = clamp((latency_reference - 2500.0) / 3000.0, 0.0, 1.0) * 0.2 if latency_reference > 0 else 0.0
+    base_weight = env_float("RATING_BASE_WEIGHT", DEFAULT_RATING_BASE_WEIGHT)
+    recent_weight = env_float("RATING_RECENT_WEIGHT", DEFAULT_RATING_RECENT_WEIGHT)
+    latency_weight = env_float("RATING_LATENCY_WEIGHT", DEFAULT_RATING_LATENCY_WEIGHT)
+    streak_bonus_step = env_float("RATING_STREAK_BONUS_STEP", DEFAULT_RATING_STREAK_BONUS_STEP)
+    failure_penalty_step = env_float("RATING_FAILURE_PENALTY_STEP", DEFAULT_RATING_FAILURE_PENALTY_STEP)
+    experience_bonus_step = env_float("RATING_EXPERIENCE_BONUS_STEP", DEFAULT_RATING_EXPERIENCE_BONUS_STEP)
+    slow_penalty_max = env_float("RATING_SLOW_PENALTY_MAX", DEFAULT_RATING_SLOW_PENALTY_MAX)
+
+    streak_bonus = min(record.success_streak, 5) * streak_bonus_step
+    failure_penalty = min(record.failure_streak, 5) * failure_penalty_step
+    experience_bonus = min(checks, 20) * experience_bonus_step
+    slow_penalty = (
+        clamp((latency_reference - 2500.0) / 3000.0, 0.0, 1.0) * slow_penalty_max if latency_reference > 0 else 0.0
+    )
 
     rating = (
-        0.55 * base
-        + 0.3 * recent_score
-        + 0.25 * latency_component
+        base_weight * base
+        + recent_weight * recent_score
+        + latency_weight * latency_component
         + streak_bonus
         + experience_bonus
         - failure_penalty
