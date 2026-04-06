@@ -50,3 +50,10 @@
 cp .env.example .env
 python3 scripts/run_pipeline.py
 ```
+
+## Основные переменные окружения
+
+- `KEY_LIST_LIMIT` — размер основного списка.
+- `EXTRA_KEY_LIST_LIMITS` — дополнительные размеры списков через запятую.
+- `WORKERS` — параллелизм проверок.
+- `TCP_PRECHECK` — быстрый TCP-предчек перед запуском `xray`.

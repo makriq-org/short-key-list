@@ -30,6 +30,13 @@ def derive_sized_path(path_value: str, limit: str) -> str:
     return str(path.with_name(f"{path.name}-{limit}"))
 
 
+def normalize_limit_strings(values: list[str]) -> list[str]:
+    normalized = sorted({int(value) for value in values}, reverse=True)
+    if any(value <= 0 for value in normalized):
+        raise SystemExit("all limits must be positive integers")
+    return [str(value) for value in normalized]
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] in {"-h", "--help"}:
         print(HELP_TEXT)
@@ -37,7 +44,7 @@ def main() -> int:
 
     output_path = os.getenv("OUTPUT_PATH", "artifacts/short-key-list.txt")
     target_file = os.getenv("PUBLISH_TARGET_FILE", "data/short-key-list.txt")
-    extra_limits = split_csv(os.getenv("EXTRA_KEY_LIST_LIMITS", "100,50"))
+    extra_limits = normalize_limit_strings(split_csv(os.getenv("EXTRA_KEY_LIST_LIMITS", "100,50")))
 
     checker_cmd = [
         sys.executable,

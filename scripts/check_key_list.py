@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -140,6 +140,13 @@ def derive_output_path(output: Path, limit: int) -> Path:
     if output.suffix:
         return output.with_name(f"{output.stem}-{limit}{output.suffix}")
     return output.with_name(f"{output.name}-{limit}")
+
+
+def normalize_limits(primary_limit: int, extra_limits: list[int]) -> list[int]:
+    limits = sorted({primary_limit, *extra_limits}, reverse=True)
+    if any(limit <= 0 for limit in limits):
+        raise SystemExit("all limits must be positive integers")
+    return limits
 
 
 def build_stream_settings(config: dict[str, Any]) -> dict[str, Any]:
@@ -508,7 +515,7 @@ def run_checks(args: argparse.Namespace) -> int:
             )
             future_to_entry[future] = entry
 
-        for future in future_to_entry:
+        for future in as_completed(future_to_entry):
             result = future.result()
             checked_at = int(time.time())
             results.append(result)
@@ -517,7 +524,7 @@ def run_checks(args: argparse.Namespace) -> int:
                 passed.append(result.entry)
             print(f"[{result.stage}] {'OK' if result.ok else 'FAIL'} {result.detail}")
 
-    requested_limits = sorted({args.limit, *args.extra_limits}, reverse=True)
+    requested_limits = normalize_limits(args.limit, args.extra_limits)
     max_limit = requested_limits[0] if requested_limits else args.limit
     ranked_selection = weighted_sample_without_replacement(passed, ratings, max_limit, randomizer)
 

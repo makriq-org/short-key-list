@@ -14,3 +14,38 @@ jobs:
           python-version: "3.12"
       - name: Compile scripts
         run: python -m py_compile scripts/*.py
+      - name: Smoke-test rating behavior
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import sys
+          from pathlib import Path
+
+          path = Path('scripts/check_key_list.py')
+          spec = importlib.util.spec_from_file_location('check_key_list', path)
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          fast = module.KeyRating(
+              entry='fast', checks=10, successes=9, failures=1,
+              success_streak=4, failure_streak=0, last_ok=True, last_checked_at=0,
+              last_elapsed_ms=650, avg_success_latency_ms=700.0,
+              latency_ema_ms=680.0, recent_score=0.92, rating=0.0,
+          )
+          slow = module.KeyRating(
+              entry='slow', checks=10, successes=9, failures=1,
+              success_streak=4, failure_streak=0, last_ok=True, last_checked_at=0,
+              last_elapsed_ms=4200, avg_success_latency_ms=4300.0,
+              latency_ema_ms=4100.0, recent_score=0.92, rating=0.0,
+          )
+          flappy = module.KeyRating(
+              entry='flappy', checks=10, successes=9, failures=1,
+              success_streak=0, failure_streak=1, last_ok=False, last_checked_at=0,
+              last_elapsed_ms=900, avg_success_latency_ms=850.0,
+              latency_ema_ms=900.0, recent_score=0.35, rating=0.0,
+          )
+
+          assert module.calculate_rating(fast) > module.calculate_rating(slow)
+          assert module.calculate_rating(fast) > module.calculate_rating(flappy)
+          PY
